@@ -1,0 +1,578 @@
+---
+title: "matias_contador"
+author: "Matias Contador"
+date: "16 de octubre de 2019"
+output: html_document
+---
+
+```{r funciones, include=FALSE}
+
+path="C:/Users/mcontadora/Desktop/Nueva carpeta/caudal_extra.csv"
+
+#chunk con las funciones necesarias para generar el reporte
+#librerias necesarias
+{
+  require(data.table)
+  require(dplyr)
+  require(ggplot2)
+  require(kableExtra)
+  require(pander)
+  require(DT)
+  require(corrplot)
+}
+
+
+
+#Funcion que agrega valores caudal_extremo, temp_extremo, precip_extremo al df
+f_extremo <- function(df_cuencas){
+  
+V_estacion <- as.vector(unique(df_cuencas$codigo_estacion))
+V_season <- as.vector(unique(df_cuencas$season))
+
+
+
+df_return <- data.frame()
+  for (i in 1:length(V_season)){
+    for (k in 1:length(V_estacion)){
+      
+      df_filtrado <- df_cuencas %>% filter(season==V_season[i], codigo_estacion==V_estacion[k])
+      v_caudal <- as.vector(df_filtrado$caudal)
+      v_temp <- as.vector(df_filtrado$temp_max_promedio)
+      v_precipitacion <- as.vector(df_filtrado$precip_promedio)
+      #Ojo que en zonas secas un valor extremo sera que llueva mas que 0
+      
+      #valor 1 
+      
+      df_filtrado$caudal_extremo <- ifelse(df_filtrado$caudal>quantile(v_caudal, 0.95, na.rm=TRUE),1,0)
+      df_filtrado$temp_extremo <- ifelse(df_filtrado$temp_max_promedio>quantile(v_temp, 0.95, na.rm=TRUE),1,0)
+      df_filtrado$precip_extremo <- ifelse(df_filtrado$precip_promedio>quantile(v_precipitacion, 0.95, na.rm=TRUE),1,0)
+      
+      
+      df_return <- rbind(df_return,df_filtrado)
+    }
+    
+  }
+
+
+return(df_return)
+
+}
+
+
+#Funcion para determinar estacion <- "Fall", "Winter", "Spring", "Summer"
+
+#Funcion online modificada
+# Original en https://stackoverflow.com/questions/9500114/find-which-season-a-particular-date-belongs-to
+toSeason <- function(dat) {
+  
+  stopifnot(class(dat) == "Date")
+  
+  scalarCheck <- function(dat) {
+    m <- as.POSIXlt(dat)$mon + 1        # correct for 0:11 range
+    d <- as.POSIXlt(dat)$mday           # correct for 0:11 range
+    if ((m == 3 & d >= 21) | (m == 4) | (m == 5) | (m == 6 & d < 21)) {
+      r <- 1
+    } else if ((m == 6 & d >= 21) | (m == 7) | (m == 8) | (m == 9 & d < 21)) {
+      r <- 2
+    } else if ((m == 9 & d >= 21) | (m == 10) | (m == 11) | (m == 12 & d < 21)) {
+      r <- 3
+    } else {
+      r <- 4
+    }
+    r
+  }
+  
+  res <- sapply(dat, scalarCheck)
+  res <- ordered(res, labels=c("Fall", "Winter", "Spring", "Summer"))
+  #Original res <- ordered(res, labels=c("Spring", "Summer", "Fall", "Winter"))
+  invisible(res)
+}
+
+
+#funcion de preparacion de datos
+#1) Elimina columnas poco relevantes como V1,fuente e institucion        
+#2) Da formato fecha a la variable fecha
+#3) Agrega la estacion con funcion toSeason
+#4) agrega valores caudal_extremo, temp_extremo, precip_extremo
+f_data_preparar <- function(df_cuencas){
+  
+  df_cuencas <- df_cuencas%>%select(codigo_estacion,nombre, altura, latitud, longitud, codigo_cuenca, nombre_sub_cuenca, cantidad_observaciones, fecha, caudal, gauge_id, precip_promedio, temp_max_promedio)
+  
+  #formato fecha
+  df_cuencas$fecha <- substr(df_cuencas$fecha,1,10)
+  df_cuencas$fecha <- as.Date(df_cuencas$fecha)
+  
+  #toSeason <- Funcion para determinar estacion <- "Fall", "Winter", "Spring", "Summer"
+  df_cuencas$season <- toSeason(df_cuencas$fecha)
+  
+  #f_extremo <- Funcion que agrega valores caudal_extremo, temp_extremo, precip_extremo al df
+  df_cuencas <- f_extremo(df_cuencas)
+  
+  return(df_cuencas)
+}
+
+
+#Funcion que entrega DF_na, el cual se utiliza para los histogramas NA y tabla que muestra cuantas estaciones presentan datos NA
+f_df_na <- function(df_cuencas){
+  df_na <- df_cuencas %>% 
+    group_by(codigo_estacion, nombre) %>%
+    summarise(precip_promedio=length(codigo_estacion),
+              temp_max_promedio=length(codigo_estacion))
+  
+  df_cuencas_na_precip_promedio2 <- df_cuencas_na_precip_promedio %>% 
+    group_by(codigo_estacion) %>%
+    summarise(precip_promedio_na=length(codigo_estacion))
+  
+  df_cuencas_na_temp_max_promedio2 <- df_cuencas_na_temp_max_promedio %>% 
+    group_by(codigo_estacion) %>%
+    summarise(temp_max_promedio_na=length(codigo_estacion))
+  
+  
+  df_na <- left_join(df_na,df_cuencas_na_precip_promedio2)
+  df_na <- left_join(df_na,df_cuencas_na_temp_max_promedio2)
+  
+  df_na$perc_precip_promedio_na <- df_na$precip_promedio_na/df_na$precip_promedio*100
+  df_na$perc_temp_max_promedio_na <- df_na$temp_max_promedio_na/df_na$temp_max_promedio*100
+  
+
+  return(df_na)
+  
+}
+
+
+#Funcion que entrega tabla que muestra cuantas estaciones presentan datos NA
+f_estaciones_na <- function(df_na){
+  
+  df_na_precip_promedio <- df_na[is.na(df_na$precip_promedio_na)==F,]
+  df_na_temp_max_promedio <- df_na[is.na(df_na$temp_max_promedio_na)==F,]
+  df_na_temp_max_promedio <- df_na[is.na(df_na$temp_max_promedio_na)==F,]
+  
+  total <- nrow(df_na)
+  na_precip_promedio <- nrow(df_na_precip_promedio)
+  na_temp_max_promedio <- nrow(df_na_temp_max_promedio) 
+  
+  estacion_con_na <- as.data.frame(matrix(c(total,na_precip_promedio,na_temp_max_promedio), nrow=1))
+  names(estacion_con_na) <- c("Total Estaciones","Estaciones con Precipitacion Promedio NA","Estaciones con Temp Max Na")
+  
+  return(estacion_con_na)
+  
+}
+
+#Funcion que toma como input una estación y haga plot de los datos para una columna
+f_time_plot_una_estacion <- function(df_cuencas,codigo_estacion_var, columna, fecha_min,
+                                     fecha_max){
+  
+  df_cuencas_plot <- df_cuencas %>% filter(codigo_estacion==codigo_estacion_var, fecha>fecha_min, fecha<fecha_max) %>% select(fecha,caudal, precip_promedio, temp_max_promedio)
+  
+  df_cuencas_plot_1 <- df_cuencas_plot %>% select(fecha,eje_y=caudal) %>% mutate(filtro_columna="caudal")
+  df_cuencas_plot_2 <- df_cuencas_plot %>% select(fecha,eje_y=precip_promedio) %>% mutate(filtro_columna="precip_promedio")
+  df_cuencas_plot_3 <- df_cuencas_plot %>% select(fecha,eje_y=temp_max_promedio) %>% mutate(filtro_columna="temp_max_promedio")
+  df_cuencas_plot <- rbind(df_cuencas_plot_1,df_cuencas_plot_2,df_cuencas_plot_3) %>% filter(filtro_columna==columna)
+  
+  df_cuencas_plot$fecha <- as.Date(df_cuencas_plot$fecha)
+  
+  plot_una_estacion<- ggplot(df_cuencas_plot, aes(x = fecha, y = eje_y))+geom_line()+ylab(columna)
+
+  return(plot_una_estacion)
+  
+}
+
+#Funcion que toma como input una estación y haga plot de los datos para varias columnas
+f_time_plot_una_estacion_varios <- function(df_cuencas_norm,codigo_estacion_varios, columna_varios, fecha_min,fecha_max_varios){
+  
+
+df_cuencas_plot_varios <- df_cuencas_norm %>% filter(codigo_estacion==codigo_estacion_var_varios, fecha>fecha_min_varios, fecha<fecha_max_varios) %>% select(fecha,caudal, precip_promedio, temp_max_promedio)
+
+df_cuencas_plot_varios_1 <- df_cuencas_plot_varios%>% select(fecha,eje_y=caudal) %>% mutate(columna="caudal")
+df_cuencas_plot_varios_2 <- df_cuencas_plot_varios%>% select(fecha,eje_y=precip_promedio) %>% mutate(columna="precip_promedio")
+df_cuencas_plot_varios_3 <- df_cuencas_plot_varios%>% select(fecha,eje_y=temp_max_promedio) %>% mutate(columna="temp_max_promedio")
+
+df_cuencas_plot_varios <- rbind(df_cuencas_plot_varios_1,df_cuencas_plot_varios_2,df_cuencas_plot_varios_3)
+
+df_cuencas_plot_varios_filtrado <- subset(df_cuencas_plot_varios, columna %in% columna_varios)
+
+plot_varia_estacion <- ggplot(df_cuencas_plot_varios_filtrado, aes(x=fecha, y=eje_y, group=columna))+
+  geom_line(aes(color=columna))+
+  ylab("Variables normalizadas")
+
+
+return(plot_varia_estacion)
+}
+
+#Funcion que entrega la cantidad de dias de caudal extremo hay por cuenca anualmente
+#esta funcion corre bajo dos supuestos
+#1) Hubieron mediciones en los dias de caudal extremo
+#2) Las estaciones no tienen grandes periodos entre los anios sin funcionar
+f_estaciones_caudal_ext_year <- function(df_cuencas){
+  
+  V_cuenca <- as.vector(unique(df_cuencas$codigo_cuenca))
+  
+  df_cuencas$fecha <- as.Date(df_cuencas$fecha)
+  
+  #ye
+  df_year_cuenca <- data.frame()
+  
+  for (j in 1:length(V_cuenca)){
+    
+    df_estacion=df_cuencas %>% filter(codigo_cuenca==V_cuenca[j])
+    f_min <- min(df_estacion$fecha)
+    f_max <- max(df_estacion$fecha)
+    year_de_medicion <- as.double((f_max-f_min)/365.25)
+    
+    df_year_cuenca_j <- as.data.frame(matrix(c(V_cuenca[j],year_de_medicion), nrow = 1, ncol = 2 ))
+    names(df_year_cuenca_j) <- c("codigo_cuenca","year_de_medicion")
+    df_year_cuenca <- rbind(df_year_cuenca, df_year_cuenca_j)
+  }
+  
+  
+  df_estaciones_caudal_ext <- df_cuencas %>% 
+    group_by(codigo_cuenca) %>% 
+    summarise(n_dias_caudal_ext=sum(caudal_extremo),
+              n_estaciones_cuenca=length(unique(codigo_estacion)),
+              n_dias_medicion=length(fecha))
+  
+  df_estaciones_caudal_ext_year <- left_join(df_estaciones_caudal_ext,df_year_cuenca)
+  
+  df_estaciones_caudal_ext_year$caudal_ext_por_year <- df_estaciones_caudal_ext_year$n_dias_caudal_ext/df_estaciones_caudal_ext_year$year_de_medicion/df_estaciones_caudal_ext_year$n_estaciones_cuenca
+  
+  return(df_estaciones_caudal_ext_year)
+}
+
+##Funcion que entrega DF para grafico  con el porcentaje de variables extremas
+f_cuencas_anual <- function(df_cuencas){
+  
+
+df_cuencas$fecha <- as.Date(df_cuencas$fecha)
+df_cuencas$year <- year(df_cuencas$fecha)
+
+
+df_cuencas_caudal_ext <- df_cuencas %>% 
+                         group_by(year) %>% 
+                         summarise(dias_caudal_ext=sum(caudal_extremo), 
+                         obs=length(caudal)) %>%
+                         mutate(tasa_caudal=dias_caudal_ext/obs) %>% 
+                         select(-obs)    
+
+
+df_cuencas_precip_ext <- df_cuencas %>% 
+                         filter(!is.na(precip_promedio)) %>% 
+                         group_by(year) %>% 
+                         summarise(dias_precip_ext=sum(precip_extremo), 
+                         obs=length(precip_promedio)) %>%
+                         mutate(tasa_precip=dias_precip_ext/obs) %>% 
+                         select(-obs)
+
+df_cuencas_temp_ext <- df_cuencas %>% 
+                      filter(!is.na(temp_max_promedio)) %>% 
+                      group_by(year) %>% 
+                      summarise(dias_temp_ext=sum(temp_extremo), 
+                      obs=length(temp_extremo)) %>%
+                      mutate(tasa_temp=dias_temp_ext/obs) %>% 
+                      select(-obs)
+  
+
+
+df_cuencas_anual <- left_join(left_join(df_cuencas_caudal_ext,df_cuencas_precip_ext),df_cuencas_temp_ext)
+
+df_graf_1 <- df_cuencas_anual %>% select(year,tasa_caudal) %>% mutate(eje_y=tasa_caudal*100, variable="Dias caudal Extremo") %>% select(year, eje_y, variable)
+
+df_graf_2 <- df_cuencas_anual %>% select(year,tasa_precip) %>% mutate(eje_y=tasa_precip*100, variable="Dias Precipitacion Extrema") %>% select(year, eje_y, variable)
+
+df_graf_3 <- df_cuencas_anual %>% select(year,tasa_temp) %>% mutate(eje_y=tasa_temp*100, variable="Dias Temperatura Extrema") %>% select(year, eje_y, variable)
+
+df_graf <- rbind(df_graf_1,df_graf_2,df_graf_3)
+
+return(df_graf)
+}
+```
+
+
+```{r DF, include=FALSE}
+#chunk donde se obtienen los DF necesarios para generar el reporte
+
+#setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+#path_cuencas <- getwd()
+
+#df_cuencas_orig <- fread(paste0(path_cuencas,"/caudal_extra.csv"))
+df_cuencas_orig <- fread(path)
+df_cuencas <- df_cuencas_orig
+
+#Entrega real
+df_cuencas <- f_data_preparar(df_cuencas)
+
+#Para correr mas rapido
+#{
+#df_cuencas <-fread("C:/Users/mcontadora/Desktop/Nueva carpeta/desafio_spike_cuencas-master/df_cuencas.csv", header = TRUE)
+
+#df_cuencas <- df_cuencas[,2:18]
+#}
+
+df_cuencas_na_precip_promedio <- df_cuencas[is.na(df_cuencas$precip_promedio)==T,]
+df_cuencas_na_temp_max_promedio <- df_cuencas[is.na(df_cuencas$temp_max_promedio)==T,]
+
+df_na <- f_df_na(df_cuencas)
+
+df_cuencas_norm <- df_cuencas %>%
+   mutate_at(c(10,12,13), funs(c(scale(.))))
+
+#DF que entrega la cantidad de dias de caudal extremo hay por cuenca anualmente
+df_estaciones_caudal_ext_year <- f_estaciones_caudal_ext_year(df_cuencas)
+
+```
+
+
+## Resumen de los datos
+```{r summary}
+summary(df_cuencas)
+```
+
+***
+
+
+## Mising
+Del summary se puede notar que las siguientes variables tiene valores NA\
+Pprecip_promedio = 27.767 observaciones -> (1.9% de los dias de medicion por cuenca)\
+temp_max_promedio = 151.563 observaciones  -> (10.7% de los dias de medicion por cuenca)\
+
+***
+
+#### Estaciones con Datos NA
+
+***
+
+```{r tabla_na, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+DF_estacion_con_na <- f_estaciones_na(df_na)
+
+print(kable(DF_estacion_con_na, format = "html", escape = F,align='ccccccc') %>%
+                 kable_styling("striped", "bordered", full_width = T, font_size = 12))
+```
+
+***
+
+Se puede notar que gran porcentaje de las estaciones tienen datos NA. Esto se puede deber por varios motivos por lo que haremos un doble click.
+
+***
+
+```{r, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+hist(df_na$perc_precip_promedio_na, main="Mising precipitacion promedio", ylab="Numero de Estaciones", xlab="(%) dias con faltantes", labels=T)
+```
+
+***
+
+Gran porcentaje de las estaciones con faltantes en precipitacion promedio tienen menos de un 20% de datos con NA en esta variable. En estos casos se puede creer que hay dias que no se realizan mediciones. Por ejemplo mantencion de instrumentos, se olvido medir, se omite porque no llueve etc.
+
+***
+
+Otro menor porcentaje tiene entre un 25 y 50% de dias sin medicion. En este caso se puede pensar que el instrumento para medir la presipitacion promedio se introdujo mas tarde que cuando se empeso a medir el caudal.
+
+***
+
+
+```{r, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+hist(df_na$perc_temp_max_promedio_na, main="Mising temperatuta maxima promedio", ylab="Numero de Estaciones", xlab="(%) dias con faltantes", labels=T)
+```
+
+***
+
+Para la variable temp_max_promedio tenemos un mayor porcentaje con menos de un 5% de dias con NA, el resto se distribuye equitativamente entre 5% y 30%. Aqui tambien se podria creer que es debido a olvidos o conseguir los intstrumentos luego de que se empesara a medir el caudal.
+
+***
+
+Hay que recalcar que la explicaciones de datos NA son teorias sin conocer el negocio ni de los metodos de medicion. Para tener mejor certesa, habria que preguntar a quienes trabajan en esta empresa por que se deben estos faltantes.
+
+***
+
+## Graficos dentro del caudal
+
+***
+
+```{r grafico_una_estacion, , echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+#inputs
+{
+  codigo_estacion_var=4540001
+  
+  #caudal, precip_promedio, temp_max_promedio
+  columna="caudal"
+  fecha_min <- as.Date("1961-01-01")
+  fecha_max <- as.Date("1970-01-01")
+}
+
+plot_una_estacion <- f_time_plot_una_estacion(df_cuencas,codigo_estacion_var, columna, fecha_min, fecha_max)
+
+plot(plot_una_estacion)
+
+```
+
+En el chunk grafico_una_estacion puede cambiar los inputs codigo_estacion_var, fecha_min, fecha_max para tener otros resultados
+
+***
+
+```{r grafico_una_estacion_varios, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+#inputs
+codigo_estacion_var_varios=4540001
+
+#caudal, precip_promedio, temp_max_promedio
+columna_varios=c("caudal", "precip_promedio", "temp_max_promedio")
+fecha_min_varios <- as.Date("1961-01-01")
+fecha_max_varios <- as.Date("1970-01-01")
+
+
+plot_una_estacion_varios <- f_time_plot_una_estacion_varios(df_cuencas_norm,codigo_estacion_varios, columna_varios, fecha_min,fecha_max_varios)
+
+
+
+plot(plot_una_estacion_varios)
+
+
+```
+
+En el chunk grafico_una_estacion_varios puede cambiar los inputs codigo_estacion_var, fecha_min, fecha_max para tener otros resultados
+
+***
+
+## Data Frame para el analisis
+
+***
+
+```{r DT, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+DT::datatable(head(df_cuencas, n=100))
+```
+
+***
+
+Se agregan las columnas caudal_extremo, temp_extremo, precip_extremo con valor 1 si la variable esta por sobre el 95% de las demas. Esta toma en cuenta la estacionalidad, pues, por ejemplo, una temperatura de 25 grados en
+invierno puede ser extrema, pero en verano es normal. Tambien toma en cuenta que cada cuenca (o
+estacion) es diferente. Lo que es extremo para una cuenca no lo es para la otra.
+
+***
+
+Es bastante razonable medir condiciones extremas, ya que son las que causan los problemas en la sociedad y medio ambiente. Poder predecir estos eventos nos ayuda a evitar problemas. Sin embargo tomar un percentil es un metodo con oportunidades de mejora ya que ignora la distribucion de los datos. Supongamo alguna estacion que tiene muy poca variacion en sus variables. Escoger el percentil 95 de sus datos indicara que tiene valores extremos a valores totalmente comunes.
+
+***
+
+Otros metodos comunes para omitir valores extremos:
+
+***
+
+1)	Tener un rango entre la media y dos o tres desviaciones estandar
+
+***
+
+2)	Tener un rango entre la mediana y 1,5 rangos intercuartiles
+
+***
+## Caudal Extremo
+***
+
+```{r hist_caudal_ext, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+hist(df_estaciones_caudal_ext_year$n_dias_caudal_ext, ylab="cantiad de cuencas", xlab="dias caudal extremo",  main = "Histograma de caudal extremo")
+
+```
+
+***
+
+Del histograma se puede inferir que han habido una gran diferencia en cuanto a dias extremos entre las distintas cuencas. Hay que notar que estas cuencas pueden tener distintos periodos de tiempo de medicion por lo que es importante ver cuantos dias extremos se tiene anualmente por estacion.
+
+***
+
+```{r hist_caudal_ext_anual, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+hist(df_estaciones_caudal_ext_year$caudal_ext_por_year, ylab="cantiad de cuencas", xlab="dias caudal extremo anualmente",  main = "Histograma de caudal extremo anual")
+
+```
+
+***
+
+La gran mayoria de las cuencas tiene entre 10 y 16 dias de caudal extremo por estacion. Solo un par de cuencas muestran tener entre 4 y 6 dias de caudal extremo por estacion.
+
+***
+
+## Variables extremas
+
+***
+
+
+```{r dias_variables_extremas_year, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+df_cuencas_anual <- f_cuencas_anual(df_cuencas)
+
+#omitimos los year inicial y final por que no necesariamente va a tener todos los dias
+df_cuencas_anual <- df_cuencas_anual %>% filter(year>1960,year<2018)
+
+
+ggplot(data=df_cuencas_anual, aes(x=year, y=eje_y, group=variable)) + 
+  geom_line(aes(color=variable))+
+  ylab("(%) Dias con variables extremas")+
+  ggtitle("(%) dias con variables extremas por estacion")
+
+```
+
+***
+
+De este grafico se puede inferir que hay una gran varianza anualmente. Los porcentajes de dias con variable extrema se encuentra alrededor del 5% por la definicion que dimos a valores extremos. Es dificil notar si es que las variables extremas van aumentando o disminuyendo por lo que se graficara por decada. 
+
+***
+
+
+```{r dias_variables_extremas_decada, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+df_cuencas_anual$decada <- paste0(substr(df_cuencas_anual$year,3,3),0)
+
+df_cuencas_decada <- df_cuencas_anual %>% 
+                     group_by(decada, variable) %>% 
+                     summarise(eje_y=mean(eje_y))
+
+df_cuencas_decada$decada <- factor(df_cuencas_decada$decada, levels=c("60","70","80","90","00","10"))
+
+ggplot(data=df_cuencas_decada, aes(x=decada, y=eje_y, group=variable)) + 
+  geom_line(aes(color=variable))+
+  ylab("(%) Dias con variables extremas anualmente")+
+  ggtitle("(%) dias con variables extremas por estacion")
+
+```
+
+De este grafico podemos notar que hay una tendencia al alza en dias de precipitacion y temperatura extrema, y una importante baja en los dias de caudal extremo.
+
+***
+
+## Prediccion
+
+***
+
+En el siguiente link <https://encyclopedia.pub/73> encontramos una publicacion con distintos metodos de ML para predecir este tipo de eventos. Probaremos con SVM el cual indica que sirve para predecir sucesos tanto en largo como corto plazo.
+
+## Matriz de correlacion
+
+***
+```{r corrplot, echo=FALSE,fig.align='center', warning=FALSE, results='asis',message=FALSE,fig.align='center'}
+
+
+df_cuencas_num <- df_cuencas %>% 
+  select(altura,latitud,longitud,caudal,precip_promedio,temp_max_promedio,caudal_extremo,temp_extremo,precip_extremo)
+
+df_cuencas_num <- df_cuencas_num[complete.cases(df_cuencas_num), ]
+
+M <- cor(df_cuencas_num)
+
+corrplot(M, method = "number")
+
+#plot(p_corr)
+```
+
+
+***
+
+Del grafico se puede ver que altura, latitud, longitud, caudal, precip_promedio, temp_max_promedio son las variables que mas se correlacionan con caudal. Por principio de parasimonia se tomaran estas variables para entrenar el modelo.
+
+***
+
+Lamentablemente el modelo no se pudo correr localmente pero se deja el archivo modelo ml adjunto para poder revisar.
+
+***
+
+Por motivos de tiempo no se pueden revisar todos los metodos propuestos. 
+Para llegar a una respuesta mas robusta corresponderia revisar los distintos metodos propuestos por el autor y elegir el modelo con menor error.

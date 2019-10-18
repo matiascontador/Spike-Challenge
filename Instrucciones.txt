@@ -1,0 +1,6 @@
+1) Para correr el archivo rmarkdown debe cambiar la variable path al comienzo del codigo.
+path="C:/Users/mcontadora/Desktop/Nueva carpeta/caudal_extra.csv"
+Debe poner la direccion donde tenga la base.
+
+2) El resultado deberia ser el mismo que el del html adjunto.
+3) Se adjunta modelo de ml que no se pudo correr localmente.
